@@ -1,0 +1,24 @@
+{
+    "config": {
+        "step": {
+            "user": {
+                "description": "Enter your username and password",
+                "data": {
+                    "username": "Username",
+                    "password": "Password"
+                }
+            },
+            "user_2":{
+                "description": "Select opener to setup",
+                "data": {
+                    "device_id": "Device ID"
+                }
+            }
+        },
+        "error": {
+            "auth": "Username/Password is wrong.",
+            "connection": "Unable to connect to the server.",
+            "unknown": "Unknown error occurred."
+        }
+    }
+}

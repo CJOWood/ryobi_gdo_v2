@@ -1,0 +1,5 @@
+rules:
+  config_flow: done
+  docs-high-level-description: done
+  enitity-unique-id: done
+  unique-config-entry: done

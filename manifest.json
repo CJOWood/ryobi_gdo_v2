@@ -1,0 +1,14 @@
+{
+    "domain": "ryobi_gdo",
+    "name": "Ryobi Garage Door Opener",
+    "codeowners": [
+        "@catduckgnaf"
+    ],
+    "config_flow": true,
+    "dependencies": [],
+    "documentation": "https://www.home-assistant.io/integrations/ryobi_gdo",
+    "iot_class": "cloud_push",
+    "requirements": [],
+    "quality_scale": "bronze",
+    "version": "1.0.0"
+}
