@@ -340,6 +340,11 @@ class RyobiApiClient:
             if msg == STATE_CONNECTED:
                 LOGGER.debug("Websocket to %s successful", self.ws.url)
                 self.ws_listening = True
+            elif msg == STATE_STARTING:
+                # Mark websocket as starting to prevent duplicate
+                # connection attempts while negotiating
+                LOGGER.debug("Websocket to %s starting", self.ws.url)
+                self.ws_listening = True
             elif msg == STATE_DISCONNECTED:
                 LOGGER.debug(
                     "Websocket to %s disconnected",
