@@ -536,7 +536,8 @@ class RyobiWebSocket:
                 self.url,
                 heartbeat=15,
                 headers=header,
-                receive_timeout=5 * 60,  # Should see something from Ryobi about every 5 minutes
+                receive_timeout=5
+                * 60,  # Should see something from Ryobi about every 5 minutes
             ) as ws_client:
                 self._ws_client = ws_client
                 LOGGER.debug("Websocket connection established to %s", self.url)
@@ -560,7 +561,8 @@ class RyobiWebSocket:
                             msg = message.json()
                             self._last_msg = time.time()
                             LOGGER.debug(
-                                "Websocket message received at %s", datetime.now(tz=UTC).isoformat()
+                                "Websocket message received at %s",
+                                datetime.now(tz=UTC).isoformat(),
                             )
                             await self.callback("data", msg)
                         case aiohttp.WSMsgType.CLOSED:
@@ -581,7 +583,8 @@ class RyobiWebSocket:
 
         # Unified post-connection and error handling
         is_auth_error = (
-            isinstance(error, aiohttp.ClientResponseError) and getattr(error, "status", None) == 401
+            isinstance(error, aiohttp.ClientResponseError)
+            and getattr(error, "status", None) == 401
         )
         is_abnormal_close = close_code == 1006 or close_code is None
 
@@ -596,9 +599,13 @@ class RyobiWebSocket:
             LOGGER.error("Unexpected response received: %s", error)
             self._error_reason = ERROR_UNKNOWN
 
-        if error is not None or (close_code is not None and self._state != STATE_STOPPED):
+        if error is not None or (
+            close_code is not None and self._state != STATE_STOPPED
+        ):
             if is_abnormal_close:
-                LOGGER.warning("Websocket closed abnormally (code 1006), will attempt reconnect")
+                LOGGER.warning(
+                    "Websocket closed abnormally (code 1006), will attempt reconnect"
+                )
                 self._state = STATE_DISCONNECTED
                 await self.set_state(STATE_DISCONNECTED)
             else:
@@ -614,7 +621,11 @@ class RyobiWebSocket:
                 await self.set_state(STATE_STOPPED)
                 return
 
-            retry_delay = min(2 ** (self.failed_attempts - 1) * 30, 300)
+            retry_delay = (
+                0
+                if self.failed_attempts == 1
+                else min(2 ** (self.failed_attempts - 2) * 30, 300)
+            )
             LOGGER.error(
                 "Websocket connection failed, retrying in %ds: %s",
                 retry_delay,
