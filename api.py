@@ -583,6 +583,9 @@ class RyobiWebSocket:
     async def close(self):
         """Close the listening websocket."""
         await RyobiWebSocket.state.fset(self, STATE_STOPPED)
+        if self._ws_client is not None:
+            await self._ws_client.close()
+        await self.session.close()
 
     async def websocket_auth(self) -> None:
         """Authenticate with Ryobi server."""
