@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import RyobiApiClient
-from .const import CONF_DEVICE_ID, COORDINATOR, DOMAIN, WS_INACTIVITY_TIMEOUT
+from .const import CONF_DEVICE_ID, COORDINATOR, DOMAIN
 
 LOGGER = logging.getLogger(__name__)
 
@@ -59,13 +59,16 @@ class RyobiDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _websocket_check(self):
         """Handle reconnection of websocket."""
-        if self.client.ws is not None:
-            if self.client.ws.inactive(WS_INACTIVITY_TIMEOUT):
-                last = datetime.fromtimestamp(self.client.ws.last_msg, tz=UTC).isoformat()
-                LOGGER.warning(
-                    "Websocket inactive since %s (listening=%s)", last, self.client.ws_listening
-                )
-                await self.client.ws.close()
+        ws = self.client.ws
+        if ws is not None and ws.state not in ("connected", "starting"):
+            LOGGER.warning(
+                "Websocket inactive since %s (listening=%s)",
+                datetime.fromtimestamp(ws.last_msg, tz=UTC).isoformat(),
+                ws._state,
+            )
+            # Only close if not already stopped
+            if ws.state != "stopped":
+                await ws.close()
         if not self.client.ws_listening:
             LOGGER.debug("Attempting websocket reconnection")
             await self.client.ws_connect()
@@ -73,7 +76,10 @@ class RyobiDataUpdateCoordinator(DataUpdateCoordinator):
     async def websocket_update(self):
         """Trigger processing updated websocket data."""
         LOGGER.debug("Processing websocket data")
-        await self._websocket_check()
+        ws = self.client.ws
+        # Only check websocket if not already stopped/disconnected
+        if ws is not None and ws.state not in ("stopped", "disconnected"):
+            await self._websocket_check()
         self._data = self.client._data
         coordinator = self.hass.data[DOMAIN][self.config.entry_id][COORDINATOR]
         coordinator.async_set_updated_data(self._data)
