@@ -296,6 +296,9 @@ class RyobiApiClient:
 
     async def ws_connect(self) -> None:
         """Connect to websocket."""
+        LOGGER.debug(
+            "ws_connect called, ws: %s, ws_listening: %s", self.ws, self.ws_listening
+        )
         if self.api_key is None:
             LOGGER.error("Problem refreshing API key.")
             raise APIKeyError
