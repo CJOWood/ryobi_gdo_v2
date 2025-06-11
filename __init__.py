@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.core_config import Config
 from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 
 from .const import COORDINATOR, DOMAIN, ISSUE_URL, PLATFORMS, VERSION
 from .coordinator import RyobiDataUpdateCoordinator
@@ -32,14 +33,13 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
         ISSUE_URL,
     )
     interval = 60  # Time in seconds
-    coordinator = RyobiDataUpdateCoordinator(hass, interval, config_entry)
+    session = async_get_clientsession(hass)
+    coordinator = RyobiDataUpdateCoordinator(hass, 60, config_entry, session)
 
     # Fetch initial data so we have data when entities subscribe
     await coordinator.async_refresh()
 
     if not coordinator.last_update_success:
-        raise ConfigEntryNotReady
-    if coordinator.client.ws is None or coordinator.client.ws.state != "connected":
         raise ConfigEntryNotReady
 
     hass.data[DOMAIN][config_entry.entry_id] = {COORDINATOR: coordinator}

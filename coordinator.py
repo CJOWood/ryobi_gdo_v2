@@ -19,7 +19,7 @@ LOGGER = logging.getLogger(__name__)
 class RyobiDataUpdateCoordinator(DataUpdateCoordinator):
     """Class to manage fetching data from the API."""
 
-    def __init__(self, hass: HomeAssistant, interval: int, config: ConfigEntry) -> None:
+    def __init__(self, hass: HomeAssistant, interval: int, config: ConfigEntry, session) -> None:
         """Initialize."""
         self.interval = timedelta(seconds=interval)
         self.name = f"Ryobi GDO ({config.data.get(CONF_DEVICE_ID)})"
@@ -29,6 +29,7 @@ class RyobiDataUpdateCoordinator(DataUpdateCoordinator):
         self.client = RyobiApiClient(
             config.data.get(CONF_USERNAME, ""),
             config.data.get(CONF_PASSWORD, ""),
+            session,
             config.data.get(CONF_DEVICE_ID, ""),
         )
         self.client.callback = self.websocket_update

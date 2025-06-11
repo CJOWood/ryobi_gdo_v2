@@ -10,12 +10,7 @@ import logging
 import aiohttp  # type: ignore
 from aiohttp.client_exceptions import ServerConnectionError, ServerTimeoutError
 
-from homeassistant.const import (
-    STATE_CLOSED,
-    STATE_CLOSING,
-    STATE_OPEN,
-    STATE_OPENING,
-)
+from homeassistant.const import STATE_CLOSED, STATE_CLOSING, STATE_OPEN, STATE_OPENING
 from homeassistant.core import callback
 
 from .const import (
@@ -62,10 +57,17 @@ class RyobiApiClient:
         "4": "fault",
     }
 
-    def __init__(self, username: str, password: str, device_id: str | None = None):
-        """Initialize the API object."""
+    def __init__(
+        self,
+        username: str,
+        password: str,
+        session: aiohttp.ClientSession,
+        device_id: str | None = None,
+    ) -> None:
+        """Initialize Ryobi API client."""
         self.username = username
         self.password = password
+        self.session = session
         self.device_id = device_id
         self.door_state = None
         self.light_state = None
@@ -77,12 +79,13 @@ class RyobiApiClient:
         self.socket_state = None
         self.ws_listening = False
         self._modules = {}
+        self._ws_task = None
 
     async def _process_request(
         self, url: str, method: str, data: dict[str, str]
     ) -> dict | None:
         """Process HTTP requests."""
-        async with aiohttp.ClientSession() as session:
+        async with self.session as session:
             http_hethod = getattr(session, method)
             LOGGER.debug("Connecting to %s using %s", url, method)
             reply = None
@@ -143,8 +146,8 @@ class RyobiApiClient:
                     device_found = True
         return device_found
 
-    async def get_devices(self) -> list:
-        """Return list of devices found."""
+    async def get_devices(self) -> dict:
+        """Return dictionary of devices found."""
         devices = {}
         url = f"https://{HOST_URI}/{DEVICE_GET_ENDPOINT}"
         data = {"username": self.username, "password": self.password}
@@ -168,7 +171,7 @@ class RyobiApiClient:
         if self.api_key is None:
             result = await self.get_api_key()
             if not result:
-                LOGGER.error("Problem refreshing API key.")
+                LOGGER.error("Problem refreshing API key")
                 return False
 
         # Reconnect logic
@@ -244,8 +247,18 @@ class RyobiApiClient:
             LOGGER.debug("Data: %s", self._data)
             if not self.ws:
                 # Start websocket listening
+                if self.api_key is None:
+                    LOGGER.error("API key is None, cannot initialize websocket")
+                    return False
+                if self.device_id is None:
+                    LOGGER.error("Device ID is None, cannot initialize websocket")
+                    return False
                 self.ws = RyobiWebSocket(
-                    self._process_message, self.username, self.api_key, self.device_id
+                    self._process_message,
+                    self.username,
+                    self.api_key,
+                    self.session,
+                    self.device_id,
                 )
         except KeyError as error:
             LOGGER.error("Exception while parsing answer to update device: %s", error)
@@ -270,7 +283,7 @@ class RyobiApiClient:
                 for module in module_list:
                     if module in key:
                         frame[module] = key
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001
             LOGGER.error("Problem parsing module list: %s", err)
             return False
         self._modules.update(frame)
@@ -300,37 +313,37 @@ class RyobiApiClient:
             "ws_connect called, ws: %s, ws_listening: %s", self.ws, self.ws_listening
         )
         if self.api_key is None:
-            LOGGER.error("Problem refreshing API key.")
+            LOGGER.error("Problem refreshing API key")
             raise APIKeyError
 
         assert self.ws
         if self.ws_listening:
-            LOGGER.debug("Websocket already connected.")
+            LOGGER.debug("Websocket already connected")
             return
 
-        LOGGER.debug("Websocket not connected, connecting now...")
+        LOGGER.debug("Websocket not connected, connecting now")
         await self.open_websocket()
 
     async def ws_disconnect(self) -> bool:
         """Disconnect from websocket."""
         assert self.ws
         if not self.ws_listening:
-            LOGGER.debug("Websocket already disconnected.")
+            LOGGER.debug("Websocket already disconnected")
         await self.ws.close()
+        return True
 
     async def open_websocket(self) -> None:
         """Connect WebSocket to Ryobi Server."""
         try:
-            LOGGER.debug("Attempting to find running loop...")
+            LOGGER.debug("Attempting to find running loop")
             loop = asyncio.get_running_loop()
         except RuntimeError:
             loop = asyncio.get_event_loop()
-            LOGGER.debug("Using new event loop...")
+            LOGGER.debug("Using new event loop")
 
-        if not self.ws_listening:
-            loop.create_task(self.ws.listen())
+        if not self.ws_listening and self.ws is not None:
+            self._ws_task = loop.create_task(self.ws.listen())
 
-    @callback
     async def _process_message(
         self, msg_type: str, msg: dict, error: str | None = None
     ) -> None:
@@ -341,24 +354,28 @@ class RyobiApiClient:
         if msg_type == SIGNAL_CONNECTION_STATE:
             self.ws_listening = False
             if msg == STATE_CONNECTED:
-                LOGGER.debug("Websocket to %s successful", self.ws.url)
+                LOGGER.debug(
+                    "Websocket to %s successful", self.ws.url if self.ws else "unknown"
+                )
                 self.ws_listening = True
             elif msg == STATE_STARTING:
                 # Mark websocket as starting to prevent duplicate
                 # connection attempts while negotiating
-                LOGGER.debug("Websocket to %s starting", self.ws.url)
+                LOGGER.debug(
+                    "Websocket to %s starting", self.ws.url if self.ws else "unknown"
+                )
                 self.ws_listening = True
             elif msg == STATE_DISCONNECTED:
                 LOGGER.debug(
                     "Websocket to %s disconnected",
-                    self.ws.url,
+                    self.ws.url if self.ws else "unknown",
                 )
             # Stopped websockets without errors are expected during shutdown
             # and ignored
             elif msg == STATE_STOPPED and error:
                 LOGGER.error(
                     "Websocket to %s failed, aborting [Error: %s]",
-                    self.ws.url,
+                    self.ws.url if self.ws else "unknown",
                     error,
                 )
             # Flag websocket as not listening
@@ -374,23 +391,23 @@ class RyobiApiClient:
 
             if METHOD in message:
                 if message[METHOD] == GARAGE_UPDATE_MSG:
-                    LOGGER.debug("Websocket update message.")
+                    LOGGER.debug("Websocket update message")
                     if PARAMS in message:
                         await self.parse_message(message[PARAMS])
 
                 elif message[METHOD] == WS_AUTH_OK:
                     if message[PARAMS]["authorized"]:
-                        LOGGER.debug("Websocket API key authorized.")
+                        LOGGER.debug("Websocket API key authorized")
                     else:
-                        LOGGER.error("Websocket API key not authorized.")
+                        LOGGER.error("Websocket API key not authorized")
 
             elif RESULT in message:
                 if RESULT in message[RESULT]:
                     if message[WS_CMD_ACK][RESULT] == WS_OK:
-                        LOGGER.debug("Websocket result OK.")
+                        LOGGER.debug("Websocket result OK")
                 if "authorized" in message[WS_CMD_ACK]:
                     if message[WS_CMD_ACK]["authorized"]:
-                        LOGGER.debug("Websocket User authorization OK.")
+                        LOGGER.debug("Websocket User authorization OK")
 
             else:
                 LOGGER.error("Websocket unknown message received: %s", message)
@@ -405,61 +422,59 @@ class RyobiApiClient:
                 data["varName"],
                 self.device_id,
             )
-            return None
+            return
 
-        for key in data:
+        for key, value in data.items():
             if key in ["topic", "varName", "id"]:
                 continue
 
-            LOGGER.debug("Websocket parsing update for item %s: %s", key, data[key])
+            LOGGER.debug("Websocket parsing update for item %s: %s", key, value)
 
             module_name = key.split(".")[1]
 
             # Garage Door updates
             if "garageDoor" in key:
                 if module_name == "doorState":
-                    self._data["door_state"] = self.DOOR_STATE[str(data[key]["value"])]
+                    self._data["door_state"] = self.DOOR_STATE[str(value["value"])]
                 elif module_name == "motionSensor":
-                    self._data["motion"] = data[key]["value"]
+                    self._data["motion"] = value["value"]
                 elif module_name == "vacationMode":
-                    self._data["vacationMode"] = data[key]["value"]
+                    self._data["vacationMode"] = value["value"]
                 elif module_name == "sensorFlag":
-                    self._data["safety"] = data[key]["value"]
-                attributes = {}
-                for item in data[key]:
-                    attributes[item] = data[key][item]
+                    self._data["safety"] = value["value"]
+                attributes = dict(value.items())
                 self._data["door_attributes"] = attributes
 
             # Garage Light updates
             elif "garageLight" in key:
                 if module_name == "lightState":
-                    self._data["light_state"] = data[key]["value"]
+                    self._data["light_state"] = value["value"]
                 attributes = {}
-                for item in data[key]:
-                    attributes[item] = data[key][item]
+                for item, attr_value in value.items():
+                    attributes[item] = attr_value
                 self._data["light_attributes"] = attributes
 
             # Park Assist updates
             elif "parkAssistLaser" in key:
                 if module_name == "moduleState":
-                    self._data["park_assist"] = data[key]["value"]
+                    self._data["park_assist"] = value["value"]
 
             # Bluetooth Speaker Updates
             elif "btSpeaker" in key:
                 if module_name == "moduleState":
-                    self._data["bt_speaker"] = data[key]["value"]
+                    self._data["bt_speaker"] = value["value"]
                 elif module_name == "micEnabled":
-                    self._data["micStatus"] = data[key]["value"]
+                    self._data["micStatus"] = value["value"]
 
             # Inflator module
             elif "inflator" in key:
                 if module_name == "moduleState":
-                    self._data["inflator"] = data[key]["value"]
+                    self._data["inflator"] = value["value"]
 
             # fan module
             elif "fan" in key:
                 if module_name == "speed":
-                    self._data["fan"] = data[key]["value"]
+                    self._data["fan"] = value["value"]
             else:
                 LOGGER.error("Websocket data update unknown module: %s", key)
 
@@ -470,14 +485,21 @@ class RyobiApiClient:
 class RyobiWebSocket:
     """Represent a websocket connection to Ryobi servers."""
 
-    def __init__(self, callback, username: str, apikey: str, device: str) -> None:
+    def __init__(
+        self,
+        ws_callback,
+        username: str,
+        apikey: str,
+        session: aiohttp.ClientSession,
+        device: str,
+    ) -> None:
         """Initialize a RyobiWebSocket instance."""
-        self.session = aiohttp.ClientSession()
+        self.session = session
         self.url = f"wss://{HOST_URI}/{DEVICE_SET_ENDPOINT}"
         self._user = username
         self._apikey = apikey
         self._device_id = device
-        self.callback: abc.Callable = callback
+        self.callback: abc.Callable = ws_callback
         self._state = None
         self._error_reason = None
         self._ws_client = None
@@ -488,9 +510,8 @@ class RyobiWebSocket:
         """Return the current state."""
         return self._state
 
-    @state.setter
-    async def state(self, value) -> None:
-        """Set the state."""
+    async def set_state(self, value) -> None:
+        """Set the state asynchronously."""
         self._state = value
         LOGGER.debug("Websocket state: %s", value)
         await self.callback(SIGNAL_CONNECTION_STATE, value, self._error_reason)
@@ -498,8 +519,8 @@ class RyobiWebSocket:
 
     async def running(self):
         """Open a persistent websocket connection and act on events."""
-        await RyobiWebSocket.state.fset(self, STATE_STARTING)
-
+        self._state = STATE_STARTING
+        await self.set_state(STATE_STARTING)
         header = {"Connection": "keep-alive, Upgrade", "handshakeTimeout": "10000"}
 
         try:
@@ -518,9 +539,9 @@ class RyobiWebSocket:
                     await asyncio.sleep(0.5)
                     await self.websocket_subscribe()
 
-                await RyobiWebSocket.state.fset(self, STATE_CONNECTED)
+                self._state = STATE_CONNECTED
+                await self.set_state(STATE_CONNECTED)
                 self.failed_attempts = 0
-
                 async for message in ws_client:
                     if self._state == STATE_STOPPED:
                         break
@@ -544,11 +565,11 @@ class RyobiWebSocket:
             else:
                 LOGGER.error("Unexpected response received: %s", error)
                 self._error_reason = ERROR_UNKNOWN
-            await RyobiWebSocket.state.fset(self, STATE_STOPPED)
-        except (aiohttp.ClientConnectionError, asyncio.TimeoutError) as error:
+            self._state = STATE_STOPPED
+            await self.set_state(STATE_STOPPED)
             if self.failed_attempts >= MAX_FAILED_ATTEMPTS:
                 self._error_reason = ERROR_TOO_MANY_RETRIES
-                await RyobiWebSocket.state.fset(self, STATE_STOPPED)
+                await self.set_state(STATE_STOPPED)
             elif self._state != STATE_STOPPED:
                 retry_delay = min(2 ** (self.failed_attempts - 1) * 30, 300)
                 self.failed_attempts += 1
@@ -557,13 +578,13 @@ class RyobiWebSocket:
                     retry_delay,
                     error,
                 )
-                await RyobiWebSocket.state.fset(self, STATE_DISCONNECTED)
+                self._state = STATE_DISCONNECTED
+                await self.set_state(STATE_DISCONNECTED)
                 await asyncio.sleep(retry_delay)
-        except Exception as error:  # pylint: disable=broad-except
             if self._state != STATE_STOPPED:
-                LOGGER.exception("Unexpected exception occurred: %s", error)
+                LOGGER.exception("Unexpected exception occurred")
                 self._error_reason = ERROR_UNKNOWN
-                await RyobiWebSocket.state.fset(self, STATE_STOPPED)
+                await self.set_state(STATE_STOPPED)
         else:
             if self._state != STATE_STOPPED:
                 LOGGER.debug(
@@ -571,7 +592,7 @@ class RyobiWebSocket:
                     str(aiohttp.WSMsgType.name),
                     str(aiohttp.WSCloseCode.name),
                 )
-                await RyobiWebSocket.state.fset(self, STATE_DISCONNECTED)
+                await self.set_state(STATE_DISCONNECTED)
                 await asyncio.sleep(5)
 
     async def listen(self):
@@ -582,14 +603,15 @@ class RyobiWebSocket:
 
     async def close(self):
         """Close the listening websocket."""
-        await RyobiWebSocket.state.fset(self, STATE_STOPPED)
+        self._state = STATE_STOPPED
+        await self.set_state(STATE_STOPPED)
         if self._ws_client is not None:
             await self._ws_client.close()
         await self.session.close()
 
     async def websocket_auth(self) -> None:
         """Authenticate with Ryobi server."""
-        LOGGER.debug("Websocket attempting authenticate with server.")
+        LOGGER.debug("Websocket attempting authenticate with server")
         auth_request = {
             "jsonrpc": "2.0",
             "id": 3,
@@ -615,26 +637,33 @@ class RyobiWebSocket:
         LOGGER.debug("Websocket sending data: %s", self.redact_api_key(message))
 
         try:
-            await self._ws_client.send_str(json_message)
-            LOGGER.debug("Websocket message sent.")
-            return True
-        except Exception as err:
+            if self._ws_client is not None:
+                await self._ws_client.send_str(json_message)
+                LOGGER.debug("Websocket message sent")
+                return True
+            else:
+                LOGGER.error("Websocket client is not connected, cannot send message")
+                self._error_reason = "Websocket client not connected"
+                self._state = STATE_DISCONNECTED
+                await self.set_state(STATE_DISCONNECTED)
+        except Exception as err:  # noqa: BLE001
             LOGGER.error("Websocket error sending message: %s", err)
             self._error_reason = err
-            await RyobiWebSocket.state.fset(self, STATE_DISCONNECTED)
+            self._state = STATE_DISCONNECTED
+            await self.set_state(STATE_DISCONNECTED)
         return False
 
-    def redact_api_key(self, message: dict) -> dict:
+    def redact_api_key(self, message: dict) -> str:
         """Clear API key data from logs."""
-        if "params" in message:
-            if "apiKey" in message["params"]:
-                message["params"]["apiKey"] = ""
-        return json.dumps(message)
+        redacted = json.loads(json.dumps(message))  # Deep copy
+        if "params" in redacted and "apiKey" in redacted["params"]:
+            redacted["params"]["apiKey"] = "***"
+        return json.dumps(redacted)
 
     async def send_message(self, *args):
         """Send message to API."""
         if self._state != STATE_CONNECTED:
-            LOGGER.warning("Websocket not yet connected, unable to send command.")
+            LOGGER.warning("Websocket not yet connected, unable to send command")
             return
 
         LOGGER.debug("Send message args: %s", args)
