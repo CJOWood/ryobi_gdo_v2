@@ -522,19 +522,21 @@ class RyobiWebSocket:
         await self.callback(SIGNAL_CONNECTION_STATE, value, self._error_reason)
         self._error_reason = None
 
-    async def running(self):
+    async def running(self) -> None:
         """Open a persistent websocket connection and act on events."""
         self._state = STATE_STARTING
         await self.set_state(STATE_STARTING)
         header = {"Connection": "keep-alive, Upgrade", "handshakeTimeout": "10000"}
+
+        error: Exception | None = None
+        close_code: int | str | None = None
 
         try:
             async with self.session.ws_connect(
                 self.url,
                 heartbeat=15,
                 headers=header,
-                receive_timeout=5
-                * 60,  # Should see something from Ryobi about every 5 minutes
+                receive_timeout=5 * 60,  # Should see something from Ryobi about every 5 minutes
             ) as ws_client:
                 self._ws_client = ws_client
                 LOGGER.debug("Websocket connection established to %s", self.url)
@@ -553,61 +555,76 @@ class RyobiWebSocket:
                     if self._state == STATE_STOPPED:
                         break
 
-                    if message.type == aiohttp.WSMsgType.TEXT:
-                        msg = message.json()
-                        self._last_msg = time.time()
-                        LOGGER.debug(
-                            "Websocket message received at %s", datetime.now(tz=UTC).isoformat()
-                        )
-                        await self.callback("data", msg)
+                    match message.type:
+                        case aiohttp.WSMsgType.TEXT:
+                            msg = message.json()
+                            self._last_msg = time.time()
+                            LOGGER.debug(
+                                "Websocket message received at %s", datetime.now(tz=UTC).isoformat()
+                            )
+                            await self.callback("data", msg)
+                        case aiohttp.WSMsgType.CLOSED:
+                            LOGGER.warning("Websocket connection closed")
+                            break
+                        case aiohttp.WSMsgType.ERROR:
+                            LOGGER.error("Websocket error")
+                            break
+                        case aiohttp.WSMsgType.PING:
+                            LOGGER.debug("Websocket ping received")
+                        case aiohttp.WSMsgType.PONG:
+                            LOGGER.debug("Websocket pong received")
+                close_code = ws_client.close_code if ws_client else None
 
-                    elif message.type == aiohttp.WSMsgType.CLOSED:
-                        LOGGER.warning("Websocket connection closed")
-                        break
+        except Exception as err:
+            error = err
+            close_code = getattr(self._ws_client, "close_code", None)
 
-                    elif message.type == aiohttp.WSMsgType.ERROR:
-                        LOGGER.error("Websocket error")
-                        break
+        # Unified post-connection and error handling
+        is_auth_error = (
+            isinstance(error, aiohttp.ClientResponseError) and getattr(error, "status", None) == 401
+        )
+        is_abnormal_close = close_code == 1006 or close_code is None
 
-                    elif message.type == aiohttp.WSMsgType.PING:
-                        LOGGER.debug("Websocket ping received")
-
-                    elif message.type == aiohttp.WSMsgType.PONG:
-                        LOGGER.debug("Websocket pong received")
-
-        except aiohttp.ClientResponseError as error:
-            if error.status == 401:
-                LOGGER.error("Credentials rejected: %s", error)
-                self._error_reason = ERROR_AUTH_FAILURE
-            else:
-                LOGGER.error("Unexpected response received: %s", error)
-                self._error_reason = ERROR_UNKNOWN
+        if is_auth_error:
+            LOGGER.error("Credentials rejected: %s", error)
+            self._error_reason = ERROR_AUTH_FAILURE
             self._state = STATE_STOPPED
             await self.set_state(STATE_STOPPED)
-            if self.failed_attempts >= MAX_FAILED_ATTEMPTS:
-                self._error_reason = ERROR_TOO_MANY_RETRIES
-                await self.set_state(STATE_STOPPED)
-            elif self._state != STATE_STOPPED:
-                retry_delay = min(2 ** (self.failed_attempts - 1) * 30, 300)
-                self.failed_attempts += 1
-                LOGGER.error(
-                    "Websocket connection failed, retrying in %ds: %s",
-                    retry_delay,
-                    error,
-                )
+            return
+
+        if error is not None and isinstance(error, aiohttp.ClientResponseError):
+            LOGGER.error("Unexpected response received: %s", error)
+            self._error_reason = ERROR_UNKNOWN
+
+        if error is not None or (close_code is not None and self._state != STATE_STOPPED):
+            if is_abnormal_close:
+                LOGGER.warning("Websocket closed abnormally (code 1006), will attempt reconnect")
                 self._state = STATE_DISCONNECTED
                 await self.set_state(STATE_DISCONNECTED)
-                await asyncio.sleep(retry_delay)
-            if self._state != STATE_STOPPED:
-                LOGGER.exception("Unexpected exception occurred")
-                self._error_reason = ERROR_UNKNOWN
+            else:
+                LOGGER.error("Websocket closed with unexpected error: %s", error)
+                self._state = STATE_STOPPED
                 await self.set_state(STATE_STOPPED)
-        else:
-            if self._state != STATE_STOPPED:
-                close_code = self._ws_client.close_code if self._ws_client else "Unknown"
-                LOGGER.debug("Websocket closed with code: %s", close_code)
-                await self.set_state(STATE_DISCONNECTED)
-                await asyncio.sleep(5)
+                return
+
+            self.failed_attempts += 1
+            if self.failed_attempts >= MAX_FAILED_ATTEMPTS:
+                self._error_reason = ERROR_TOO_MANY_RETRIES
+                self._state = STATE_STOPPED
+                await self.set_state(STATE_STOPPED)
+                return
+
+            retry_delay = min(2 ** (self.failed_attempts - 1) * 30, 300)
+            LOGGER.error(
+                "Websocket connection failed, retrying in %ds: %s",
+                retry_delay,
+                error,
+            )
+            await asyncio.sleep(retry_delay)
+        elif close_code is not None and self._state != STATE_STOPPED:
+            LOGGER.debug("Websocket closed with code: %s", close_code)
+            await self.set_state(STATE_DISCONNECTED)
+            await asyncio.sleep(5)
 
     async def listen(self):
         """Start the listening websocket."""
