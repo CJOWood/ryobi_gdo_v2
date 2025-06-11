@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 import logging
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import RyobiApiClient
-from .const import CONF_DEVICE_ID, COORDINATOR, DOMAIN
+from .const import CONF_DEVICE_ID, COORDINATOR, DOMAIN, WS_INACTIVITY_TIMEOUT
 
 LOGGER = logging.getLogger(__name__)
 
@@ -59,8 +59,15 @@ class RyobiDataUpdateCoordinator(DataUpdateCoordinator):
 
     async def _websocket_check(self):
         """Handle reconnection of websocket."""
+        if self.client.ws is not None:
+            if self.client.ws.inactive(WS_INACTIVITY_TIMEOUT):
+                last = datetime.fromtimestamp(self.client.ws.last_msg, tz=UTC).isoformat()
+                LOGGER.warning(
+                    "Websocket inactive since %s (listening=%s)", last, self.client.ws_listening
+                )
+                await self.client.ws.close()
         if not self.client.ws_listening:
-            # Reconnect the websocket
+            LOGGER.debug("Attempting websocket reconnection")
             await self.client.ws_connect()
 
     async def websocket_update(self):

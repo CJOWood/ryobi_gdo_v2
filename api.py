@@ -4,14 +4,15 @@ from __future__ import annotations
 
 import asyncio
 from collections import abc
+from datetime import UTC, datetime
 import json
 import logging
+import time
 
-import aiohttp  # type: ignore
+import aiohttp
 from aiohttp.client_exceptions import ServerConnectionError, ServerTimeoutError
 
 from homeassistant.const import STATE_CLOSED, STATE_CLOSING, STATE_OPEN, STATE_OPENING
-from homeassistant.core import callback
 
 from .const import (
     DEVICE_GET_ENDPOINT,
@@ -504,6 +505,7 @@ class RyobiWebSocket:
         self._error_reason = None
         self._ws_client = None
         self.failed_attempts = 0
+        self._last_msg = time.time()
 
     @property
     def state(self) -> str | None:
@@ -513,7 +515,10 @@ class RyobiWebSocket:
     async def set_state(self, value) -> None:
         """Set the state asynchronously."""
         self._state = value
-        LOGGER.debug("Websocket state: %s", value)
+        if self._error_reason:
+            LOGGER.debug("Websocket state: %s reason: %s", value, self._error_reason)
+        else:
+            LOGGER.debug("Websocket state: %s", value)
         await self.callback(SIGNAL_CONNECTION_STATE, value, self._error_reason)
         self._error_reason = None
 
@@ -532,6 +537,8 @@ class RyobiWebSocket:
                 * 60,  # Should see something from Ryobi about every 5 minutes
             ) as ws_client:
                 self._ws_client = ws_client
+                LOGGER.debug("Websocket connection established to %s", self.url)
+                self._last_msg = time.time()
 
                 # Auth to server and subscribe to topic
                 if self._state != STATE_CONNECTED:
@@ -548,6 +555,10 @@ class RyobiWebSocket:
 
                     if message.type == aiohttp.WSMsgType.TEXT:
                         msg = message.json()
+                        self._last_msg = time.time()
+                        LOGGER.debug(
+                            "Websocket message received at %s", datetime.now(tz=UTC).isoformat()
+                        )
                         await self.callback("data", msg)
 
                     elif message.type == aiohttp.WSMsgType.CLOSED:
@@ -557,6 +568,12 @@ class RyobiWebSocket:
                     elif message.type == aiohttp.WSMsgType.ERROR:
                         LOGGER.error("Websocket error")
                         break
+
+                    elif message.type == aiohttp.WSMsgType.PING:
+                        LOGGER.debug("Websocket ping received")
+
+                    elif message.type == aiohttp.WSMsgType.PONG:
+                        LOGGER.debug("Websocket pong received")
 
         except aiohttp.ClientResponseError as error:
             if error.status == 401:
@@ -587,11 +604,8 @@ class RyobiWebSocket:
                 await self.set_state(STATE_STOPPED)
         else:
             if self._state != STATE_STOPPED:
-                LOGGER.debug(
-                    "Websocket msgType: %s CloseCode: %s",
-                    str(aiohttp.WSMsgType.name),
-                    str(aiohttp.WSCloseCode.name),
-                )
+                close_code = self._ws_client.close_code if self._ws_client else "Unknown"
+                LOGGER.debug("Websocket closed with code: %s", close_code)
                 await self.set_state(STATE_DISCONNECTED)
                 await asyncio.sleep(5)
 
@@ -641,11 +655,12 @@ class RyobiWebSocket:
                 await self._ws_client.send_str(json_message)
                 LOGGER.debug("Websocket message sent")
                 return True
-            else:
-                LOGGER.error("Websocket client is not connected, cannot send message")
-                self._error_reason = "Websocket client not connected"
-                self._state = STATE_DISCONNECTED
-                await self.set_state(STATE_DISCONNECTED)
+
+            LOGGER.error("Websocket client is not connected, cannot send message")
+            self._error_reason = "Websocket client not connected"
+            self._state = STATE_DISCONNECTED
+            await self.set_state(STATE_DISCONNECTED)
+
         except Exception as err:  # noqa: BLE001
             LOGGER.error("Websocket error sending message: %s", err)
             self._error_reason = err
@@ -688,6 +703,15 @@ class RyobiWebSocket:
         )
         LOGGER.debug("Full message: %s", ws_command)
         await self.websocket_send(ws_command)
+
+    @property
+    def last_msg(self) -> float:
+        """Return timestamp of last received message."""
+        return self._last_msg
+
+    def inactive(self, timeout: int) -> bool:
+        """Return True if last message exceeds timeout seconds."""
+        return time.time() - self._last_msg > timeout
 
 
 class APIKeyError(Exception):
