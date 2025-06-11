@@ -34,7 +34,7 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: ConfigEntry) -> b
     )
     interval = 60  # Time in seconds
     session = async_get_clientsession(hass)
-    coordinator = RyobiDataUpdateCoordinator(hass, 60, config_entry, session)
+    coordinator = RyobiDataUpdateCoordinator(hass, interval, config_entry, session)
 
     # Fetch initial data so we have data when entities subscribe
     await coordinator.async_refresh()

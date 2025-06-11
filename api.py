@@ -577,7 +577,7 @@ class RyobiWebSocket:
                             LOGGER.debug("Websocket pong received")
                 close_code = ws_client.close_code if ws_client else None
 
-        except Exception as err:
+        except Exception as err:  # noqa: BLE001
             error = err
             close_code = getattr(self._ws_client, "close_code", None)
 
