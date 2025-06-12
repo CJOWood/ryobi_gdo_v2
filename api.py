@@ -618,8 +618,9 @@ class RyobiWebSocket:
                 else min(2 ** (self.failed_attempts - 2) * 30, 300)
             )
             LOGGER.error(
-                "Websocket connection failed, retrying in %ds: %s",
+                "Websocket connection failed, retrying in %ds (close_code: %s, error: %s)",
                 retry_delay,
+                close_code,
                 error,
             )
             await asyncio.sleep(retry_delay)
