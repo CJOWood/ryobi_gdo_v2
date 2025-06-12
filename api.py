@@ -416,68 +416,59 @@ class RyobiApiClient:
             LOGGER.debug("Unknown message from websocket: %s type: %s", msg, msg_type)
 
     async def parse_message(self, data: dict) -> None:
-        """Parse incoming updated data."""
-        if self.device_id != data["varName"]:
+        """Parse incoming updated data from the websocket."""
+        if self.device_id != data.get("varName"):
             LOGGER.debug(
                 "Websocket update for %s does not match %s",
-                data["varName"],
+                data.get("varName"),
                 self.device_id,
             )
             return
 
         for key, value in data.items():
-            if key in ["topic", "varName", "id"]:
+            if key in {"topic", "varName", "id"}:
                 continue
 
             LOGGER.debug("Websocket parsing update for item %s: %s", key, value)
-
-            module_name = key.split(".")[1]
-
-            # Garage Door updates
-            if "garageDoor" in key:
-                if module_name == "doorState":
-                    self._data["door_state"] = self.DOOR_STATE[str(value["value"])]
-                elif module_name == "motionSensor":
-                    self._data["motion"] = value["value"]
-                elif module_name == "vacationMode":
-                    self._data["vacationMode"] = value["value"]
-                elif module_name == "sensorFlag":
-                    self._data["safety"] = value["value"]
-                attributes = dict(value.items())
-                self._data["door_attributes"] = attributes
-
-            # Garage Light updates
-            elif "garageLight" in key:
-                if module_name == "lightState":
-                    self._data["light_state"] = value["value"]
-                attributes = {}
-                for item, attr_value in value.items():
-                    attributes[item] = attr_value
-                self._data["light_attributes"] = attributes
-
-            # Park Assist updates
-            elif "parkAssistLaser" in key:
-                if module_name == "moduleState":
-                    self._data["park_assist"] = value["value"]
-
-            # Bluetooth Speaker Updates
-            elif "btSpeaker" in key:
-                if module_name == "moduleState":
-                    self._data["bt_speaker"] = value["value"]
-                elif module_name == "micEnabled":
-                    self._data["micStatus"] = value["value"]
-
-            # Inflator module
-            elif "inflator" in key:
-                if module_name == "moduleState":
-                    self._data["inflator"] = value["value"]
-
-            # fan module
-            elif "fan" in key:
-                if module_name == "speed":
-                    self._data["fan"] = value["value"]
-            else:
+            parts = key.split(".")
+            if len(parts) < 2:
                 LOGGER.error("Websocket data update unknown module: %s", key)
+                continue
+            module_name = parts[1]
+
+            match parts[0]:
+                case "garageDoor":
+                    match module_name:
+                        case "doorState":
+                            self._data["door_state"] = self.DOOR_STATE.get(str(value.get("value")))
+                        case "motionSensor":
+                            self._data["motion"] = value.get("value")
+                        case "vacationMode":
+                            self._data["vacationMode"] = value.get("value")
+                        case "sensorFlag":
+                            self._data["safety"] = value.get("value")
+                    self._data["door_attributes"] = dict(value.items())
+                case "garageLight":
+                    if module_name == "lightState":
+                        self._data["light_state"] = value.get("value")
+                    self._data["light_attributes"] = dict(value.items())
+                case "parkAssistLaser":
+                    if module_name == "moduleState":
+                        self._data["park_assist"] = value.get("value")
+                case "btSpeaker":
+                    match module_name:
+                        case "moduleState":
+                            self._data["bt_speaker"] = value.get("value")
+                        case "micEnabled":
+                            self._data["micStatus"] = value.get("value")
+                case "inflator":
+                    if module_name == "moduleState":
+                        self._data["inflator"] = value.get("value")
+                case "fan":
+                    if module_name == "speed":
+                        self._data["fan"] = value.get("value")
+                case _:
+                    LOGGER.error("Websocket data update unknown module: %s", key)
 
         if self.callback is not None:
             await self.callback()
