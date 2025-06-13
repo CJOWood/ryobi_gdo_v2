@@ -106,7 +106,7 @@ class RyobiApiClient:
                 LOGGER.error("Timeout connecting to %s", url)
             except ServerConnectionError:
                 LOGGER.error("Problem connecting to server at %s", url)
-            await session.close()
+
             return reply
 
     async def get_api_key(self) -> bool:

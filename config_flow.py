@@ -7,8 +7,8 @@ import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.helpers import selector
-import homeassistant.helpers.config_validation as cv
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
+import homeassistant.helpers.config_validation as cv
 
 from .api import RyobiApiClient
 from .const import CONF_DEVICE_ID, DOMAIN
@@ -103,4 +103,5 @@ class RyobiFlowHandler(config_entries.ConfigFlow, domain=DOMAIN):
         """Return list of device IDs."""
         session = async_get_clientsession(self.hass)
         client = RyobiApiClient(username=username, password=password, session=session)
-        return await client.get_devices()
+        devices = await client.get_devices()
+        return list(devices.keys())
