@@ -86,28 +86,26 @@ class RyobiApiClient:
         self, url: str, method: str, data: dict[str, str]
     ) -> dict | None:
         """Process HTTP requests."""
-        async with self.session as session:
-            http_hethod = getattr(session, method)
-            LOGGER.debug("Connecting to %s using %s", url, method)
-            reply = None
-            try:
-                async with http_hethod(url, data=data) as response:
-                    rawReply = await response.text()
-                    try:
-                        reply = json.loads(rawReply)
-                        if not isinstance(reply, dict):
-                            reply = None
-                    except ValueError:
-                        LOGGER.warning("Reply was not in JSON format: %s", rawReply)
+        http_method = getattr(self.session, method)
+        LOGGER.debug("Connecting to %s using %s", url, method)
+        reply = None
+        try:
+            async with http_method(url, data=data) as response:
+                rawReply = await response.text()
+                try:
+                    reply = json.loads(rawReply)
+                    if not isinstance(reply, dict):
+                        reply = None
+                except ValueError:
+                    LOGGER.warning("Reply was not in JSON format: %s", rawReply)
 
-                    if response.status in [404, 405, 500]:
-                        LOGGER.warning("HTTP Error: %s", rawReply)
-            except (TimeoutError, ServerTimeoutError):
-                LOGGER.error("Timeout connecting to %s", url)
-            except ServerConnectionError:
-                LOGGER.error("Problem connecting to server at %s", url)
-
-            return reply
+                if response.status in [404, 405, 500]:
+                    LOGGER.warning("HTTP Error: %s", rawReply)
+        except (TimeoutError, ServerTimeoutError):
+            LOGGER.error("Timeout connecting to %s", url)
+        except ServerConnectionError:
+            LOGGER.error("Problem connecting to server at %s", url)
+        return reply
 
     async def get_api_key(self) -> bool:
         """Get api_key from Ryobi."""
