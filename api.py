@@ -438,7 +438,9 @@ class RyobiApiClient:
                 case "garageDoor":
                     match module_name:
                         case "doorState":
-                            self._data["door_state"] = self.DOOR_STATE.get(str(value.get("value")))
+                            self._data["door_state"] = self.DOOR_STATE.get(
+                                str(value.get("value"))
+                            )
                         case "motionSensor":
                             self._data["motion"] = value.get("value")
                         case "vacationMode":
